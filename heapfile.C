@@ -17,19 +17,20 @@ const Status createHeapFile(const string fileName)
     {
 		// file doesn't exist. First create it and allocate
 		// an empty header page and data page.
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
+		status = db.createFile(fileName);
+        status = db.openFile(fileName, file);
+		status = bufMgr->allocPage(file, hdrPageNo, newPage);
+        hdrPage = (FileHdrPage*) newPage;
+        // hdrPage->fileName = fileName;
+		status = bufMgr->allocPage(file, newPageNo, newPage);
+        newPage->init(newPageNo);
+        hdrPage->firstPage = newPageNo;
+        hdrPage->lastPage = newPageNo;
+        hdrPage->pageCnt = 1;
+        hdrPage->recCnt = 0;
+		bufMgr->unPinPage(file, newPageNo, true);
+		bufMgr->unPinPage(file, hdrPageNo, true);
+        return OK;
     }
     return (FILEEXISTS);
 }
@@ -45,23 +46,26 @@ HeapFile::HeapFile(const string & fileName, Status& returnStatus)
 {
     Status 	status;
     Page*	pagePtr;
+    int     hdrPageNo;
+    int     hdrPage;
 
     cout << "opening file " << fileName << endl;
 
     // open the file and read in the header page and the first data page
     if ((status = db.openFile(fileName, filePtr)) == OK)
     {
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
+		filePtr->getFirstPage(hdrPageNo);
+        bufMgr->readPage(filePtr, hdrPageNo, pagePtr);
+        headerPage = (FileHdrPage*) pagePtr;
+        headerPageNo = hdrPageNo;
+        hdrDirtyFlag = false;
+
+        bufMgr->readPage(filePtr, headerPage->firstPage, curPage);
+        curPageNo = headerPage->firstPage;
+        curDirtyFlag = false;
+        curRec = NULLRID;	
+
+		returnStatus = OK;
     }
     else
     {
@@ -119,14 +123,26 @@ const Status HeapFile::getRecord(const RID & rid, Record & rec)
 {
     Status status;
 
-    // cout<< "getRecord. record (" << rid.pageNo << "." << rid.slotNo << ")" << endl;
-   
-   
-   
-   
-   
-   
-   
+    cout<< "getRecord. record (" << rid.pageNo << "." << rid.slotNo << ")" << endl;
+    
+    // if record on curPage
+   if(rid.pageNo == curPageNo) {
+    curPage->getRecord(rid, rec);
+   } else if (curPage == NULL){ // if curPage is null
+    curPageNo = rid.pageNo;
+    bufMgr->readPage(filePtr, curPageNo, curPage);
+    curPage->getRecord(rid, rec);
+    curDirtyFlag = false;
+   } else { //Get the page containing the record
+    bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+    bufMgr->readPage(filePtr, rid.pageNo, curPage);
+    curPageNo = rid.pageNo;
+    curDirtyFlag = false;
+    curPage->getRecord(rid, rec);
+   }
+    curRec = rid;
+    return OK;
+
 }
 
 HeapFileScan::HeapFileScan(const string & name,
@@ -218,21 +234,57 @@ const Status HeapFileScan::resetScan()
 
 const Status HeapFileScan::scanNext(RID& outRid)
 {
-    Status 	status = OK;
+    Status 	pageStatus = OK;
+    Status 	recStatus = OK;
     RID		nextRid;
     RID		tmpRid;
     int 	nextPageNo;
     Record      rec;
 
+    // current page is invalid
+    if(curPage == NULL) {
+        curPageNo = headerPage-> firstPage;
+        bufMgr->readPage(filePtr, curPageNo, curPage);
+        curDirtyFlag = false;
+        curPage->firstRecord(nextRid);
+    } else {
+        // get next record
+        curPage->nextRecord(curRec, nextRid);
+    }
     
-	
-	
-	
-	
-	
-	
-	
-	
+    // current record not valid, go to next page
+    if(curPage->getRecord(curRec, rec)==INVALIDSLOTNO){
+        //Release current page
+        pageStatus = curPage->getNextPage(nextPageNo);
+        bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+        //Update current page to next page
+        curPageNo = nextPageNo;
+        curDirtyFlag = false;
+        bufMgr->readPage(filePtr, curPageNo, curPage);
+        curPage->firstRecord(nextRid);
+    }
+
+    while(pageStatus == OK){ // loop through pages
+        while(recStatus != ENDOFPAGE){ // loop through records
+            curPage->getRecord(nextRid, rec);
+            // found match
+            if(matchRec(rec)) {
+                curRec = nextRid;
+                outRid = curRec;
+                return OK;
+            }
+            tmpRid = nextRid;
+            recStatus = curPage->nextRecord(tmpRid, nextRid);
+        }
+        pageStatus = curPage->getNextPage(nextPageNo);
+        bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+        curDirtyFlag = false;
+        curPageNo = nextPageNo;
+        bufMgr->readPage(filePtr, curPageNo, curPage);
+        curPage->firstRecord(nextRid);
+    }
+    curRec = NULLRID; //TODO
+    return FILEEOF;
 	
 }
 
@@ -356,19 +408,46 @@ const Status InsertFileScan::insertRecord(const Record & rec, RID& outRid)
         // will never fit on a page, so don't even bother looking
         return INVALIDRECLEN;
     }
+    
+    // make curPage last page if null
+    if(curPage == NULL) {
+        curPageNo = headerPage->lastPage;
+        bufMgr->readPage(filePtr, headerPage->lastPage, curPage);
+        curDirtyFlag = false;
+    }
+    
+    // insert record and bookkeeping
+    status = curPage->insertRecord(rec, rid);
+  
+    // if page doesn't have space make new page
+    if(status == NOSPACE) {
 
+        //Unpin page that didn't have room
+        bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+        curDirtyFlag = false;
+        // create new page
+        bufMgr->allocPage(filePtr, newPageNo, newPage); // pin1
+        newPage->init(newPageNo);
+        // make last page current page
+        curPageNo = headerPage->lastPage;
+        bufMgr->readPage(filePtr, curPageNo, curPage);  // pin2
+        // link last page to new last page
+        curPage->setNextPage(newPageNo);
+        bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);  // unpin 2
+        headerPage->lastPage = newPageNo;
+        headerPage->pageCnt += 1;
+        // set curPage to be new page
+        curPage = newPage;
+        curPageNo = newPageNo;
+        // try to insert record
+        curPage->insertRecord(rec, rid);
+    }
   
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
+    // finish bookkeeping
+    headerPage->recCnt += 1;
+    curDirtyFlag = true;
+    hdrDirtyFlag = true;
+    return OK;
 }
 
 
