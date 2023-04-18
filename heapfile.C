@@ -50,7 +50,7 @@ HeapFile::HeapFile(const string & fileName, Status& returnStatus)
     int     hdrPageNo;
     int     hdrPage;
 
-    cout << "opening file " << fileName << endl;
+    // cout << "opening file " << fileName << endl;
 
     // open the file and read in the header page and the first data page
     if ((status = db.openFile(fileName, filePtr)) == OK)
@@ -80,7 +80,7 @@ HeapFile::HeapFile(const string & fileName, Status& returnStatus)
 HeapFile::~HeapFile()
 {
     Status status;
-    cout << "invoking heapfile destructor on file " << headerPage->fileName << endl;
+    // cout << "invoking heapfile destructor on file " << headerPage->fileName << endl;
 
     // see if there is a pinned data page. If so, unpin it 
     if (curPage != NULL)
