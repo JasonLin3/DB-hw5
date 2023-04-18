@@ -239,7 +239,7 @@ const Status HeapFileScan::scanNext(RID& outRid)
     Status 	recStatus = OK;
     RID		nextRid;
     RID		tmpRid;
-    int 	nextPageNo;
+    int 	nextPageNo = 0;
     Record      rec;
 
     // current page is invalid
