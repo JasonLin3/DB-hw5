@@ -21,7 +21,7 @@ const Status createHeapFile(const string fileName)
         status = db.openFile(fileName, file);
 		status = bufMgr->allocPage(file, hdrPageNo, newPage);
         hdrPage = (FileHdrPage*) newPage;
-        strncpy(hdrPage->fileName, fileName.data(), sizeof(fileName));
+        strncpy(hdrPage->fileName, fileName.data(), fileName.size() + 1);
 		status = bufMgr->allocPage(file, newPageNo, newPage);
         newPage->init(newPageNo);
         hdrPage->firstPage = newPageNo;
